@@ -48,23 +48,27 @@ jobs:
           rm -f /tmp/oci_launcher_state.json
           echo "ステートをリセットしました。最初からやり直します。"
 
+      # ─────────────────────────────────────────
+      # PEM書き出し（Python経由で確実に改行を正規化）
+      # ─────────────────────────────────────────
       - name: PEM鍵ファイルを書き出す
-        # GitHub Secretsからの改行（CR+LF・\nリテラル）を正規化してファイルに書き出す
-        # key_file方式を使うことでOCI SDK 401エラーを回避する
         env:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
-        run: |
-          printf '%s' "$OCI_PRIVATE_KEY" \
-            | sed 's/\\r//g' \
-            | sed 's/\\n/\n/g' \
-            > /tmp/oci_api_key.pem
-          chmod 600 /tmp/oci_api_key.pem
-          # ヘッダー行の存在確認（PEMが正しく書き出されているか）
-          if ! grep -q "BEGIN" /tmp/oci_api_key.pem; then
-            echo "ERROR: PEMファイルの書き出しに失敗しました。OCI_PRIVATE_KEY Secretを確認してください。"
-            exit 1
-          fi
-          echo "PEMファイルの書き出し成功: $(wc -l < /tmp/oci_api_key.pem) 行"
+        run: python write_pem.py
+
+      # ─────────────────────────────────────────
+      # 診断: 設定値の確認（値はマスク、形式のみ検証）
+      # ─────────────────────────────────────────
+      - name: 設定診断（形式チェック）
+        env:
+          OCI_USER_OCID:           ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID:        ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT:         ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION:              ${{ secrets.OCI_REGION }}
+          OCI_AVAILABILITY_DOMAIN: ${{ secrets.OCI_AVAILABILITY_DOMAIN }}
+          OCI_SUBNET_OCID:         ${{ secrets.OCI_SUBNET_OCID }}
+          OCI_IMAGE_OCID:          ${{ secrets.OCI_IMAGE_OCID }}
+        run: python diagnose.py
 
       - name: ステート確認（作成済みならスキップ）
         id: check-state
@@ -111,8 +115,6 @@ jobs:
       # 次セッション起動（作成未完了かつ正常終了の場合のみ）
       # ─────────────────────────────────────────
       - name: 次のセッションを起動
-        # run-launcher が「セッション終了(exit 0)」で終わった場合のみ次を起動
-        # instance_created=true の場合や、スキップされた場合は起動しない
         if: >
           steps.run-launcher.outcome == 'success' &&
           steps.check-state.outputs.instance_created != 'true'
