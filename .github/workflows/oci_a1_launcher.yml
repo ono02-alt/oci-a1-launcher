@@ -7,20 +7,15 @@ on:
         description: 'ステートをリセットして最初からやり直す場合は true を入力'
         required: false
         default: 'false'
-  workflow_run:
-    workflows: ["OCI A1 Launcher"]
-    types:
-      - completed
+
+permissions:
+  actions: write   # gh workflow run で次セッションを起動するために必要
+  contents: read
 
 jobs:
   launch:
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.name == 'OCI A1 Launcher')
-    timeout-minutes: 355
+    timeout-minutes: 355   # 5時間55分（GitHub Actions上限6時間より少し短く）
 
     steps:
       - name: リポジトリをチェックアウト
@@ -35,8 +30,10 @@ jobs:
       - name: 依存パッケージをインストール
         run: pip install oci
 
+      # ─────────────────────────────────────────
+      # ステートの復元（前回セッションの続きから再開）
+      # ─────────────────────────────────────────
       - name: ステートキャッシュを復元
-        id: restore-state
         if: github.event.inputs.force_restart != 'true'
         uses: actions/cache/restore@v4
         with:
@@ -49,12 +46,15 @@ jobs:
         if: github.event.inputs.force_restart == 'true'
         run: |
           rm -f /tmp/oci_launcher_state.json
-          echo "ステートをリセットしました。"
+          echo "ステートをリセットしました。最初からやり直します。"
 
       - name: ステート確認（作成済みならスキップ）
         id: check-state
         run: python check_state.py
 
+      # ─────────────────────────────────────────
+      # メインスクリプト実行
+      # ─────────────────────────────────────────
       - name: OCI A1 インスタンス作成スクリプトを実行
         id: run-launcher
         if: steps.check-state.outputs.instance_created != 'true'
@@ -77,9 +77,11 @@ jobs:
           MEMORY_GB:                ${{ secrets.MEMORY_GB }}
           BOOT_VOLUME_GB:           ${{ secrets.BOOT_VOLUME_GB }}
           SSH_PUBLIC_KEY:           ${{ secrets.SSH_PUBLIC_KEY }}
-          GITHUB_OUTPUT:            ${{ env.GITHUB_OUTPUT }}
         run: python oci_a1_launcher.py
 
+      # ─────────────────────────────────────────
+      # ステートの保存（常に実行）
+      # ─────────────────────────────────────────
       - name: ステートキャッシュを保存
         if: always()
         uses: actions/cache/save@v4
@@ -87,6 +89,26 @@ jobs:
           path: /tmp/oci_launcher_state.json
           key: oci-launcher-state-${{ github.repository }}-latest
 
+      # ─────────────────────────────────────────
+      # 次セッション起動（作成未完了かつ正常終了の場合のみ）
+      # ─────────────────────────────────────────
+      - name: 次のセッションを起動
+        # run-launcher が「セッション終了(exit 0)」で終わった場合のみ次を起動
+        # instance_created=true の場合や、スキップされた場合は起動しない
+        if: >
+          steps.run-launcher.outcome == 'success' &&
+          steps.check-state.outputs.instance_created != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "次のセッションを起動します..."
+          gh workflow run oci_a1_launcher.yml \
+            --ref ${{ github.ref_name }}
+          echo "次セッション起動完了"
+
+      # ─────────────────────────────────────────
+      # 実行サマリー
+      # ─────────────────────────────────────────
       - name: 実行結果サマリー
         if: always()
         run: |
