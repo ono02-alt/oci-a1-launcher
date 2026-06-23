@@ -48,6 +48,24 @@ jobs:
           rm -f /tmp/oci_launcher_state.json
           echo "ステートをリセットしました。最初からやり直します。"
 
+      - name: PEM鍵ファイルを書き出す
+        # GitHub Secretsからの改行（CR+LF・\nリテラル）を正規化してファイルに書き出す
+        # key_file方式を使うことでOCI SDK 401エラーを回避する
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$OCI_PRIVATE_KEY" \
+            | sed 's/\\r//g' \
+            | sed 's/\\n/\n/g' \
+            > /tmp/oci_api_key.pem
+          chmod 600 /tmp/oci_api_key.pem
+          # ヘッダー行の存在確認（PEMが正しく書き出されているか）
+          if ! grep -q "BEGIN" /tmp/oci_api_key.pem; then
+            echo "ERROR: PEMファイルの書き出しに失敗しました。OCI_PRIVATE_KEY Secretを確認してください。"
+            exit 1
+          fi
+          echo "PEMファイルの書き出し成功: $(wc -l < /tmp/oci_api_key.pem) 行"
+
       - name: ステート確認（作成済みならスキップ）
         id: check-state
         run: python check_state.py
