@@ -1,0 +1,100 @@
+name: OCI A1 Launcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_restart:
+        description: 'ステートをリセットして最初からやり直す場合は true を入力'
+        required: false
+        default: 'false'
+  workflow_run:
+    workflows: ["OCI A1 Launcher"]
+    types:
+      - completed
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.name == 'OCI A1 Launcher')
+    timeout-minutes: 355
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: pip install oci
+
+      - name: ステートキャッシュを復元
+        id: restore-state
+        if: github.event.inputs.force_restart != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/oci_launcher_state.json
+          key: oci-launcher-state-${{ github.repository }}-latest
+          restore-keys: |
+            oci-launcher-state-${{ github.repository }}-
+
+      - name: ステートをリセット
+        if: github.event.inputs.force_restart == 'true'
+        run: |
+          rm -f /tmp/oci_launcher_state.json
+          echo "ステートをリセットしました。"
+
+      - name: ステート確認（作成済みならスキップ）
+        id: check-state
+        run: python check_state.py
+
+      - name: OCI A1 インスタンス作成スクリプトを実行
+        id: run-launcher
+        if: steps.check-state.outputs.instance_created != 'true'
+        env:
+          OCI_USER_OCID:            ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID:         ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT:          ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY:          ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION:               ${{ secrets.OCI_REGION }}
+          OCI_AVAILABILITY_DOMAIN:  ${{ secrets.OCI_AVAILABILITY_DOMAIN }}
+          OCI_SUBNET_OCID:          ${{ secrets.OCI_SUBNET_OCID }}
+          OCI_IMAGE_OCID:           ${{ secrets.OCI_IMAGE_OCID }}
+          NOTIFICATION_EMAIL:       ${{ secrets.NOTIFICATION_EMAIL }}
+          SMTP_HOST:                ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:                ${{ secrets.SMTP_PORT }}
+          SMTP_USER:                ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD:            ${{ secrets.SMTP_PASSWORD }}
+          INSTANCE_NAME:            ${{ secrets.INSTANCE_NAME }}
+          OCPU_COUNT:               ${{ secrets.OCPU_COUNT }}
+          MEMORY_GB:                ${{ secrets.MEMORY_GB }}
+          BOOT_VOLUME_GB:           ${{ secrets.BOOT_VOLUME_GB }}
+          SSH_PUBLIC_KEY:           ${{ secrets.SSH_PUBLIC_KEY }}
+          GITHUB_OUTPUT:            ${{ env.GITHUB_OUTPUT }}
+        run: python oci_a1_launcher.py
+
+      - name: ステートキャッシュを保存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/oci_launcher_state.json
+          key: oci-launcher-state-${{ github.repository }}-latest
+
+      - name: 実行結果サマリー
+        if: always()
+        run: |
+          echo "## OCI A1 Launcher 実行結果" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/oci_launcher_state.json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/oci_launcher_state.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ステートファイルなし" >> $GITHUB_STEP_SUMMARY
+          fi
